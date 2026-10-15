@@ -1,0 +1,6 @@
+# Hosts and networks you are AUTHORIZED to scan. One per line.
+# Copy to scope.txt and edit. Scanning anything else is illegal.
+example.com
+*.example.com
+10.10.11.0/24
+192.168.1.50
