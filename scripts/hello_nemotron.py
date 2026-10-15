@@ -1,7 +1,7 @@
 """Smoke test: prove the Token Factory key works and see how Nemotron answers.
 
 Usage:
-    export NEBIUS_API_KEY="NEBIUS_API_KEY_WAS_HERE_REVOKED"
+    export NEBIUS_API_KEY="..."
     python scripts/hello_nemotron.py              # uses DEFAULT_MODEL
     python scripts/hello_nemotron.py <model-id>   # try another id from the list
 """
