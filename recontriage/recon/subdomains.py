@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import socket
+import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -43,6 +44,10 @@ def fetch_crtsh(domain: str, timeout: int = 60) -> list[dict]:
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return []          # crt.sh says 404 when nothing matches
+            last_err = e
         except Exception as e:  # noqa: BLE001 - we really do want to retry anything here
             last_err = e
     raise RuntimeError(f"crt.sh lookup failed for {domain}: {last_err}")

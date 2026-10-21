@@ -18,9 +18,15 @@ NOTE_SYSTEM = SYSTEM_PROMPT.replace(
 )
 
 
-def draft_note(client: NemotronClient, target: str, finding: dict, all_items: list[dict]) -> str:
+def draft_note(client: NemotronClient, target: str, finding: dict, all_items: list[dict],
+               attack_surface: str = "") -> str:
     related = "\n".join(_compact(it) for it in all_items)
-    user = f"""Target: {target}
+    import json as _json
+    evidence_block = ""
+    if finding.get("evidence"):
+        evidence_block = "\nVerification checks already run (read-only):\n" + _json.dumps(finding["evidence"])[:1500]
+    surface = f"\nOverall attack surface: {attack_surface}\n" if attack_surface else ""
+    user = f"""Target: {target}{surface}{evidence_block}
 
 Top finding selected by triage:
   id: {finding['id']}

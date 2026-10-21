@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import json
 
+from ..scope import Scope
+from . import verify
 from .client import NANO, ULTRA, NemotronClient
 
 SEVERITIES = ("critical", "high", "medium", "low", "info")
@@ -92,17 +94,60 @@ def enrich_with_nano(client: NemotronClient, items: list[dict], chunk: int = 40)
     return notes
 
 
+def _clamp_conf(v) -> float:
+    try:
+        c = float(v)
+    except (TypeError, ValueError):
+        return 0.5
+    return max(0.0, min(1.0, c))
+
+
+def _validate_findings(raw, by_id: list[str] | dict, top_n: int, log=print) -> list[dict]:
+    """Shared validator. Keeps only findings that reference known ids, clamps
+    severity/confidence, resolves related_ids, normalises ranks."""
+    ids = set(by_id)
+    findings: list[dict] = []
+    for f in raw if isinstance(raw, list) else []:
+        fid = str(f.get("id", "")).strip()
+        if fid not in ids:
+            log(f"[warn] Ultra referenced unknown id {fid!r}; dropped")
+            continue
+        sev = str(f.get("severity", "info")).lower()
+        related = [r for r in (str(x).strip() for x in f.get("related_ids", []) or [])
+                   if r in ids and r != fid]
+        findings.append({
+            "rank": int(f.get("rank", len(findings) + 1)),
+            "id": fid,
+            "severity": sev if sev in SEVERITIES else "info",
+            "title": str(f.get("title", "")).strip(),
+            "rationale": str(f.get("rationale", "")).strip(),
+            "next_step": str(f.get("next_step", "")).strip(),
+            "confidence": _clamp_conf(f.get("confidence", 0.5)),
+            "related_ids": related[:5],
+        })
+    findings.sort(key=lambda f: f["rank"])
+    for i, f in enumerate(findings, 1):
+        f["rank"] = i
+    return findings[:top_n]
+
+
 def rank_with_ultra(
     client: NemotronClient,
     target: str,
     items: list[dict],
     notes: dict[str, str],
     top_n: int = 10,
-) -> list[dict]:
-    """One Ultra call that ranks everything. Returns validated findings.
+    log=print,
+) -> dict:
+    """One Ultra call that ranks everything with cross-item reasoning.
 
-    Each finding: {"rank", "id", "severity", "title", "rationale", "next_step", "item"}
-    where "item" is the original recon dict the id refers to.
+    Returns {"attack_surface": "<short paragraph>", "findings": [...]}.
+    Each finding has: rank, id, severity, title, rationale, next_step,
+    confidence (0-1), related_ids (other item ids that combine with this one),
+    and item (the original recon dict).
+
+    The attack_surface summary and related_ids are the reason a 550B model is
+    here: they require reasoning ACROSS items, not item-by-item.
     """
     lines = []
     for it in items:
@@ -113,45 +158,137 @@ def rank_with_ultra(
         f"Target: {target}\n"
         f"Recon items ({len(items)}), one per line, with analyst notes after '#':\n\n"
         + "\n".join(lines)
-        + f"\n\nRank the {min(top_n, len(items))} items most worth a human's attention, best first. "
-        "Consider: exposure of sensitive files/panels, outdated software, dangling DNS, "
-        "unusual services, and how items combine. Reference items ONLY by their id.\n"
-        'Reply as JSON: {"findings": [{"rank": 1, "id": "P1", "severity": "high|medium|low|info", '
-        '"title": "<8 words max>", "rationale": "<one sentence, cite evidence>", '
-        '"next_step": "<one non-exploitative verification step>"}]}'
+        + f"\n\nFirst, in one short paragraph, describe the overall attack surface: "
+        "what kind of host(s) this looks like and the 2-3 themes that stand out.\n"
+        f"Then rank the {min(top_n, len(items))} items most worth a human's attention, best first. "
+        "Weigh how items COMBINE (e.g. a dangling subdomain plus an exposed VCS directory "
+        "is worse than either alone). Reference items ONLY by their id.\n"
+        'Reply as JSON: {"attack_surface": "<paragraph>", "findings": [{"rank": 1, '
+        '"id": "P1", "severity": "critical|high|medium|low|info", "title": "<8 words max>", '
+        '"rationale": "<one sentence citing evidence>", "confidence": 0.0-1.0, '
+        '"related_ids": ["S2"], "next_step": "<one non-exploitative verification step>"}]}'
     )
     data = client.chat_json(ULTRA, SYSTEM_PROMPT, user, max_tokens=8000)
 
     by_id = {it["id"]: it for it in items}
-    findings: list[dict] = []
     raw = data.get("findings", []) if isinstance(data, dict) else data
-    for f in raw if isinstance(raw, list) else []:
-        fid = str(f.get("id", "")).strip()
-        if fid not in by_id:
-            # Hallucination guard: a finding about an item we never gave it.
-            print(f"[warn] Ultra referenced unknown id {fid!r}; dropped")
-            continue
-        sev = str(f.get("severity", "info")).lower()
-        findings.append({
-            "rank": int(f.get("rank", len(findings) + 1)),
-            "id": fid,
-            "severity": sev if sev in SEVERITIES else "info",
-            "title": str(f.get("title", "")).strip(),
-            "rationale": str(f.get("rationale", "")).strip(),
-            "next_step": str(f.get("next_step", "")).strip(),
-            "item": by_id[fid],
-        })
-    findings.sort(key=lambda f: f["rank"])
-    for i, f in enumerate(findings, 1):   # normalise ranks to 1..n
-        f["rank"] = i
-    return findings[:top_n]
+    findings = _validate_findings(raw, by_id, top_n, log=log)
+    for f in findings:                       # attach the source recon dict
+        f["item"] = by_id[f["id"]]
+    summary = str(data.get("attack_surface", "")).strip() if isinstance(data, dict) else ""
+    return {"attack_surface": summary, "findings": findings}
 
 
-def triage(client: NemotronClient, target: str, items: list[dict], top_n: int = 10) -> dict:
-    """Module entry point. Returns {"items": [...labelled...], "notes": {...}, "findings": [...]}."""
+def verify_findings(
+    client: NemotronClient,
+    target: str,
+    items: list[dict],
+    findings: list[dict],
+    scope: Scope,
+    max_checks: int = 6,
+    log=print,
+) -> list[dict]:
+    """The agent loop. Ultra proposes read-only checks on the top findings; we
+    run them (scope-enforced, in verify.py); Ultra revises confidence/severity
+    given the evidence. One propose call + one revise call, bounded checks.
+
+    Returns the (possibly re-ordered) findings with an added "evidence" list
+    per finding and updated confidence.
+    """
+    by_id = {it["id"]: it for it in items}
+    top = findings[:max_checks]
+    if not top:
+        return findings
+
+    # 1. propose checks
+    menu = ", ".join(verify.CHECK_TYPES)
+    lines = [f'{f["id"]} {f["title"]} (sev={f["severity"]}, conf={f["confidence"]}) '
+             f'-- {_compact(f["item"]).split(" ", 1)[1]}' for f in top]
+    propose = (
+        f"Target: {target}\nTop findings:\n" + "\n".join(lines) +
+        f"\n\nYou may request up to {max_checks} READ-ONLY checks to raise or lower your "
+        f"confidence. Available check types: {menu}. http_* needs a path item; "
+        "tls_cert/dns work on any host item. Request checks ONLY for the ids above.\n"
+        'Reply as JSON: {"checks": [{"type": "http_title", "id": "D1"}]}'
+    )
+    try:
+        data = client.chat_json(ULTRA, SYSTEM_PROMPT, propose, max_tokens=2000, log=log)
+        requested = data.get("checks", []) if isinstance(data, dict) else []
+    except Exception as e:  # noqa: BLE001
+        log(f"[verify] propose step failed, skipping verification: {e}")
+        return findings
+
+    # 2. run checks (scope-enforced inside run_check)
+    results = []
+    for chk in requested[:max_checks]:
+        res = verify.run_check(chk, by_id, scope)
+        results.append(res)
+        tag = "ok" if "result" in res else res.get("error", "?")
+        log(f"[verify] {chk.get('type')} {chk.get('id')}: {tag}")
+
+    # attach evidence to findings
+    ev_by_id: dict[str, list] = {}
+    for r in results:
+        ev_by_id.setdefault(r.get("id", ""), []).append(r)
+    for f in findings:
+        f["evidence"] = ev_by_id.get(f["id"], [])
+
+    if not results:
+        return findings
+
+    # 3. revise
+    revise = (
+        f"Target: {target}\nHere are the check results (JSON):\n{json.dumps(results)[:4000]}\n\n"
+        "Given this evidence, re-rank and adjust severity/confidence for these findings. "
+        "If a check confirmed a default/unauthenticated panel or an expired cert, raise "
+        "confidence; if a path 404s or redirects to login, lower it.\n"
+        'Reply as JSON: {"findings": [{"rank": 1, "id": "D1", "severity": "...", '
+        '"title": "...", "rationale": "...", "confidence": 0.0-1.0, "related_ids": [], '
+        '"next_step": "..."}]}'
+    )
+    try:
+        data = client.chat_json(ULTRA, SYSTEM_PROMPT, revise, max_tokens=6000, log=log)
+        raw = data.get("findings", []) if isinstance(data, dict) else data
+        revised = _validate_findings(raw, by_id, len(findings), log=log)
+    except Exception as e:  # noqa: BLE001
+        log(f"[verify] revise step failed, keeping original ranking: {e}")
+        return findings
+
+    if not revised:
+        return findings
+    for f in revised:
+        f["item"] = by_id[f["id"]]
+        f["evidence"] = ev_by_id.get(f["id"], [])
+    return revised
+
+
+def triage(
+    client: NemotronClient,
+    target: str,
+    items: list[dict],
+    top_n: int = 10,
+    scope: Scope | None = None,
+    verify_loop: bool = True,
+    log=print,
+) -> dict:
+    """Module entry point.
+
+    Returns {"items", "notes", "attack_surface", "findings"}. When verify_loop
+    is on and a scope is given, runs the read-only agent loop to gather
+    evidence and revise the ranking.
+    """
     labelled = label_items(items)
     if not labelled:
-        return {"items": [], "notes": {}, "findings": []}
+        return {"items": [], "notes": {}, "attack_surface": "", "findings": []}
     notes = enrich_with_nano(client, labelled)
-    findings = rank_with_ultra(client, target, labelled, notes, top_n=top_n)
-    return {"items": labelled, "notes": notes, "findings": findings}
+    ranked = rank_with_ultra(client, target, labelled, notes, top_n=top_n, log=log)
+    findings = ranked["findings"]
+    if verify_loop and scope is not None and findings:
+        log(f"[verify] Nemotron Ultra proposing read-only checks")
+        findings = verify_findings(client, target, labelled, findings, scope, log=log)
+    return {
+        "items": labelled,
+        "notes": notes,
+        "attack_surface": ranked["attack_surface"],
+        "findings": findings,
+    }

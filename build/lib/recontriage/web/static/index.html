@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReconTriage</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #0f151c; --fg: #d6e2ef; --dim: #6b7f94;
+    --green: #7ee787; --red: #ff7b72; --yellow: #e3b341; --border: #1d2733;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    display: flex; justify-content: center; padding: 24px 16px;
+  }
+  .term {
+    width: 100%; max-width: 1040px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  }
+  .bar { display:flex; align-items:center; gap:8px; padding:10px 14px; background:#141c25; border-bottom:1px solid var(--border); }
+  .dot { width:12px; height:12px; border-radius:50%; }
+  .bar .title { margin-left:auto; color: var(--dim); font-size: 12px; }
+  .out { padding: 16px; min-height: 420px; max-height: 70vh; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+  .line { color: var(--dim); }
+  .line.cmd { color: var(--fg); }
+  .line.err { color: var(--red); }
+  .line.ok { color: var(--green); }
+  .prompt { color: var(--green); }
+  pre.rich { margin: 8px 0 0; white-space: pre; overflow-x: auto; font: inherit; line-height: 1.25; }
+  form { display:flex; gap:8px; align-items:center; padding: 12px 16px; border-top: 1px solid var(--border); background:#0d1218; }
+  form .prompt { white-space: nowrap; }
+  input[type=text] { flex:1; background: transparent; border: none; outline: none; color: var(--fg); font: inherit; caret-color: var(--green); }
+  button { background: var(--green); color:#04140a; border:none; border-radius:6px; padding:6px 14px; font:inherit; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.4; cursor: default; }
+  .opts { display:flex; flex-wrap: wrap; gap: 14px; padding: 8px 16px 12px; color: var(--dim); font-size: 12px; background:#0d1218; }
+  .opts label { display:flex; align-items:center; gap:5px; cursor:pointer; }
+  .opts input[type=number] { width: 64px; background:#0b0f14; border:1px solid var(--border); color:var(--fg); font:inherit; font-size:12px; padding:2px 6px; border-radius:4px; }
+  .cursor { display:inline-block; width:8px; height:14px; background: var(--green); vertical-align: -2px; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  @media (prefers-color-scheme: light) { body { background:#0b0f14; } } /* always a dark terminal */
+</style>
+</head>
+<body>
+<div class="term">
+  <div class="bar">
+    <span class="dot" style="background:#ff5f57"></span>
+    <span class="dot" style="background:#febc2e"></span>
+    <span class="dot" style="background:#28c840"></span>
+    <span class="title">recontriage — Nemotron on Nebius Token Factory</span>
+  </div>
+
+  <div class="out" id="out"><span class="line">ReconTriage. Paste a domain, IP or URL that is listed in scope.txt and press Enter.
+Scanning anything you are not authorized to test is illegal; the scope guard will refuse it.
+</span></div>
+
+  <form id="f">
+    <span class="prompt">recontriage&nbsp;❯</span>
+    <input type="text" id="target" placeholder="scanme.nmap.org" autocomplete="off" autofocus>
+    <button id="go" type="submit">scan</button>
+  </form>
+  <div class="opts">
+    <label><input type="checkbox" id="skip_subdomains"> skip subdomains</label>
+    <label><input type="checkbox" id="skip_dirs"> skip dir brute-force</label>
+    <label><input type="checkbox" id="no_llm"> recon only (no Nemotron)</label>
+    <label>top ports <input type="number" id="top_ports" value="1000" min="10" max="65535"></label>
+  </div>
+</div>
+
+<script>
+const out = document.getElementById('out');
+const form = document.getElementById('f');
+const go = document.getElementById('go');
+const targetEl = document.getElementById('target');
+
+function addLine(text, cls = '') {
+  const el = document.createElement('span');
+  el.className = 'line ' + cls;
+  el.textContent = text + '\n';
+  out.appendChild(el);
+  out.scrollTop = out.scrollHeight;
+  return el;
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const target = targetEl.value.trim();
+  if (!target) return;
+
+  const body = {
+    target,
+    skip_subdomains: document.getElementById('skip_subdomains').checked,
+    skip_dirs: document.getElementById('skip_dirs').checked,
+    no_llm: document.getElementById('no_llm').checked,
+    top_ports: parseInt(document.getElementById('top_ports').value, 10) || 1000,
+  };
+
+  // Echo the command like a real shell would.
+  const flags = [
+    body.skip_subdomains && '--skip-subdomains',
+    body.skip_dirs && '--skip-dirs',
+    body.no_llm && '--no-llm',
+    body.top_ports !== 1000 && `--top-ports ${body.top_ports}`,
+  ].filter(Boolean).join(' ');
+  addLine(`recontriage ❯ recontriage ${target} ${flags}`.trim(), 'cmd');
+
+  go.disabled = true; targetEl.disabled = true;
+  const cursor = document.createElement('span'); cursor.className = 'cursor'; out.appendChild(cursor);
+
+  try {
+    const res = await fetch('/api/scan', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+    });
+    // Read the NDJSON stream line by line as it arrives.
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      let nl;
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        const raw = buf.slice(0, nl); buf = buf.slice(nl + 1);
+        if (!raw.trim()) continue;
+        const ev = JSON.parse(raw);
+        if (ev.type === 'log') { out.insertBefore(addLine(ev.line), cursor); }
+        else if (ev.type === 'error') { out.insertBefore(addLine(ev.message, 'err'), cursor); }
+        else if (ev.type === 'report') {
+          const div = document.createElement('div');
+          div.innerHTML = ev.html;                 // trusted: our own server rendered it
+          out.insertBefore(div, cursor);
+          out.scrollTop = out.scrollHeight;
+        }
+      }
+    }
+  } catch (err) {
+    addLine('connection error: ' + err, 'err');
+  } finally {
+    cursor.remove();
+    go.disabled = false; targetEl.disabled = false; targetEl.value = ''; targetEl.focus();
+  }
+});
+</script>
+</body>
+</html>

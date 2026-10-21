@@ -98,6 +98,8 @@ def scan_ports(target: str, top_ports: int = 1000, timeout: int = 600) -> list[d
         -T4           faster timing; fine for authorized targets
         --top-ports N scan nmap's N most common ports instead of all 65535.
                       1000 is nmap's default and a good speed/coverage tradeoff.
+        --max-retries 3  busy targets (scanme!) sometimes drop probes; retry
+                      so an open port isn't reported as filtered
         -oX -         write XML to stdout ("-") so we never touch a temp file
 
     The command is a LIST, not a string. That means the target is passed as a
@@ -105,7 +107,7 @@ def scan_ports(target: str, top_ports: int = 1000, timeout: int = 600) -> list[d
     even if someone types something weird. Never build shell strings from
     user input.
     """
-    cmd = ["nmap", "-sV", "-T4", "--top-ports", str(top_ports), "-oX", "-", target]
+    cmd = ["nmap", "-sV", "-T4", "--max-retries", "3", "--top-ports", str(top_ports), "-oX", "-", target]
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout, check=False

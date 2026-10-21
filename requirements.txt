@@ -1,4 +1,6 @@
 openai>=1.40
 python-dotenv>=1.0
 rich>=13
+fastapi>=0.110
+uvicorn>=0.29
 pytest>=8.0

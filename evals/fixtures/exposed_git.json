@@ -1,0 +1,13 @@
+{
+  "name": "exposed_git",
+  "note": "A live .git directory is a near-certain source-code leak; it should rank above an old-but-patched service.",
+  "expect_top_type": "path",
+  "expect_top_match": ".git",
+  "items": [
+    {"type": "port", "host": "10.0.0.5", "port": 22, "proto": "tcp", "service": "ssh", "product": "OpenSSH", "version": "8.9p1", "extra": "Ubuntu", "tunnel": "", "source": "nmap"},
+    {"type": "port", "host": "10.0.0.5", "port": 80, "proto": "tcp", "service": "http", "product": "nginx", "version": "1.18.0", "extra": "", "tunnel": "", "source": "nmap"},
+    {"type": "path", "url": "http://10.0.0.5/.git/HEAD", "status": 200, "size": 23, "words": 2, "redirect": "", "source": "ffuf"},
+    {"type": "path", "url": "http://10.0.0.5/images", "status": 301, "size": 310, "words": 20, "redirect": "http://10.0.0.5/images/", "source": "ffuf"},
+    {"type": "path", "url": "http://10.0.0.5/css", "status": 301, "size": 308, "words": 20, "redirect": "http://10.0.0.5/css/", "source": "ffuf"}
+  ]
+}

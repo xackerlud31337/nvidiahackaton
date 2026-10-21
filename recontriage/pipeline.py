@@ -15,7 +15,9 @@ Order of operations and the safety rule:
 from __future__ import annotations
 
 import ipaddress
+import json
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -41,6 +43,9 @@ class Options:
     max_hosts: int = 5           # cap on hosts we actively scan per run
     top_n: int = 10              # findings to ask Ultra for
     wordlist: str = str(DEFAULT_WORDLIST)
+    reuse: bool = False          # load last recon.json for this target, skip scanning
+    verify: bool = True          # run the read-only agent verification loop
+    runs_dir: str = "runs"
     log: Callable[[str], None] = field(default=print)
 
 
@@ -63,6 +68,22 @@ def _web_url(host: str, port: dict) -> str | None:
     return f"{scheme}://{host}" if default else f"{scheme}://{host}:{port['port']}"
 
 
+def latest_recon(target: str, runs_dir: str) -> Path | None:
+    """Most recent runs/<target>_<stamp>/recon.json, or None."""
+    folders = sorted(Path(runs_dir).glob(f"{target}_*"))
+    for folder in reversed(folders):
+        f = folder / "recon.json"
+        if f.exists():
+            return f
+    return None
+
+
+def _strip_ids(items: list[dict]) -> list[dict]:
+    """Saved recon.json may contain ids from a previous triage; drop them so
+    label_items assigns fresh, consistent ones."""
+    return [{k: v for k, v in it.items() if k != "id"} for it in items]
+
+
 def run(target: str, opts: Options | None = None) -> dict:
     opts = opts or Options()
     log = opts.log
@@ -76,6 +97,18 @@ def run(target: str, opts: Options | None = None) -> dict:
 
     items: list[dict] = []
     hosts: list[str] = [target]
+
+    # ---- 1b. cached recon? ----------------------------------------------
+    # Useful for iterating on prompts, re-running demos, and being polite to
+    # the target. Scope is still enforced above: cached or not, an
+    # out-of-scope target never gets this far.
+    if opts.reuse:
+        cached = latest_recon(target, opts.runs_dir)
+        if cached:
+            items = _strip_ids(json.loads(cached.read_text()))
+            log(f"[reuse] loaded {len(items)} items from {cached.parent.name}/ (no scanning)")
+            return _triage_stage(target, items, opts, started)
+        log("[reuse] no previous run found; scanning")
 
     # ---- 2. subdomains (passive) ----------------------------------------
     if not _is_ip(target) and not opts.skip_subdomains:
@@ -131,10 +164,16 @@ def run(target: str, opts: Options | None = None) -> dict:
             items.extend(hits)
             log(f"[dirs] {len(hits)} hits on {url}")
 
+    return _triage_stage(target, items, opts, started)
+
+
+def _triage_stage(target: str, items: list[dict], opts: Options, started: float) -> dict:
+    log = opts.log
     result = {
         "target": target,
         "started": started,
         "items": items,
+        "attack_surface": "",
         "findings": [],
         "notes": {},
         "note": "",
@@ -150,16 +189,20 @@ def run(target: str, opts: Options | None = None) -> dict:
         return result
 
     client = NemotronClient()
+    scope = load_scope(opts.scope_path)
     log(f"[triage] Nemotron Nano enriching {len(items)} items")
-    tri = triage(client, target, items, top_n=opts.top_n)
+    tri = triage(client, target, items, top_n=opts.top_n,
+                 scope=scope, verify_loop=opts.verify, log=log)
     log(f"[triage] Nemotron Ultra ranked {len(tri['findings'])} findings")
     result["items"] = tri["items"]
     result["notes"] = tri["notes"]
+    result["attack_surface"] = tri["attack_surface"]
     result["findings"] = tri["findings"]
 
     if tri["findings"]:
         log("[note] Nemotron Ultra drafting note for #1")
-        result["note"] = draft_note(client, target, tri["findings"][0], tri["items"])
+        result["note"] = draft_note(client, target, tri["findings"][0], tri["items"],
+                                    attack_surface=tri["attack_surface"])
 
     result["usage"] = client.usage.summary()
     result["elapsed"] = round(time.time() - started, 1)

@@ -111,10 +111,30 @@ class NemotronClient:
             )
         return content
 
-    def chat_json(self, model: str, system: str, user: str, **kw) -> dict | list:
-        """chat() + extract_json(). Separate so callers that want plain text
-        (the finding note) can use chat() directly."""
-        return extract_json(self.chat(model, system, user, **kw))
+    def chat_json(self, model: str, system: str, user: str, *, retries: int = 1, **kw) -> dict | list:
+        """chat() + extract_json(), with self-repair.
+
+        If the reply doesn't contain parseable JSON we send it back ONCE with
+        the parser's complaint and ask for JSON only. Models fix their own
+        formatting mistakes reliably; this turns a rare crash into a rare
+        extra call. Separate from chat() so prose callers (the finding note)
+        aren't affected.
+        """
+        text = self.chat(model, system, user, **kw)
+        for attempt in range(retries + 1):
+            try:
+                return extract_json(text)
+            except ValueError as e:
+                if attempt == retries:
+                    raise
+                repair = (
+                    "Your previous reply could not be parsed as JSON.\n"
+                    f"Parser error: {str(e).splitlines()[0]}\n\n"
+                    "Previous reply:\n" + text[:4000] +
+                    "\n\nReply again with ONLY the JSON, no fences, no prose."
+                )
+                text = self.chat(model, system, repair, **kw)
+        raise AssertionError("unreachable")
 
 
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)

@@ -1,0 +1,12 @@
+{
+  "name": "dangling_subdomain",
+  "note": "A subdomain that no longer resolves but once had a cert is a classic takeover candidate; it should outrank routine open ports.",
+  "expect_top_type": "subdomain",
+  "expect_top_match": "DOES-NOT-RESOLVE",
+  "items": [
+    {"type": "port", "host": "93.184.216.34", "port": 443, "proto": "tcp", "service": "https", "product": "Apache httpd", "version": "2.4.52", "extra": "", "tunnel": "ssl", "source": "nmap"},
+    {"type": "subdomain", "host": "www.example.com", "ip": "93.184.216.34", "source": "crt.sh"},
+    {"type": "subdomain", "host": "old-staging.example.com", "ip": "", "source": "crt.sh"},
+    {"type": "subdomain", "host": "mail.example.com", "ip": "93.184.216.40", "source": "crt.sh"}
+  ]
+}

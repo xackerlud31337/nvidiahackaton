@@ -40,9 +40,28 @@ def test_rank_drops_unknown_ids_and_normalises():
         {"rank": 1, "id": "D1", "severity": "weird", "title": "git", "rationale": "r", "next_step": "n"},
         {"rank": 3, "id": "P99", "severity": "high", "title": "ghost", "rationale": "r", "next_step": "n"},
     ]})
-    findings = rank_with_ultra(fake, "example.com", labelled, {})
+    ranked = rank_with_ultra(fake, "example.com", labelled, {}, log=lambda *_: None)
+    findings = ranked["findings"]
     assert [f["id"] for f in findings] == ["D1", "P1"]       # sorted, ghost dropped
     assert [f["rank"] for f in findings] == [1, 2]
     assert findings[0]["severity"] == "info"                 # unknown -> info
     assert findings[1]["severity"] == "high"                 # lowercased
     assert findings[0]["item"]["url"] == "http://x/.git/HEAD"
+    assert 0.0 <= findings[0]["confidence"] <= 1.0           # confidence present
+
+
+def test_diff_items():
+    from recontriage.diff import diff_items
+    old = [
+        {"type": "port", "host": "h", "port": 22, "proto": "tcp"},
+        {"type": "path", "url": "http://h/old"},
+    ]
+    new = [
+        {"type": "port", "host": "h", "port": 22, "proto": "tcp"},   # same
+        {"type": "port", "host": "h", "port": 80, "proto": "tcp"},   # added
+        {"type": "path", "url": "http://h/new"},                     # added
+    ]
+    d = diff_items(old, new)
+    assert d["same"] == 1
+    assert {i["port"] for i in d["added"] if i["type"] == "port"} == {80}
+    assert any(i["url"] == "http://h/old" for i in d["removed"])

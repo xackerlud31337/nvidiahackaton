@@ -1,0 +1,12 @@
+{
+  "name": "default_panel",
+  "note": "An exposed phpMyAdmin panel is directly actionable and should outrank an informational robots.txt.",
+  "expect_top_type": "path",
+  "expect_top_match": "phpmyadmin",
+  "items": [
+    {"type": "port", "host": "10.0.0.9", "port": 80, "proto": "tcp", "service": "http", "product": "Apache httpd", "version": "2.4.7", "extra": "Ubuntu", "tunnel": "", "source": "nmap"},
+    {"type": "port", "host": "10.0.0.9", "port": 3306, "proto": "tcp", "service": "mysql", "product": "MySQL", "version": "5.7.33", "extra": "", "tunnel": "", "source": "nmap"},
+    {"type": "path", "url": "http://10.0.0.9/phpmyadmin", "status": 200, "size": 7120, "words": 420, "redirect": "", "source": "ffuf"},
+    {"type": "path", "url": "http://10.0.0.9/robots.txt", "status": 200, "size": 42, "words": 6, "redirect": "", "source": "ffuf"}
+  ]
+}
